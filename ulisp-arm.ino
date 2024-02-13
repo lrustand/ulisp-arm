@@ -5,16 +5,16 @@
 */
 
 // Lisp Library
-const char LispLibrary[] PROGMEM = "";
+//const char LispLibrary[] PROGMEM = "";
 
 // Compile options
 
-// #define resetautorun
+#define resetautorun
 #define printfreespace
 // #define printgcs
 // #define sdcardsupport
 // #define gfxsupport
-// #define lisplibrary
+#define lisplibrary
 #define assemblerlist
 // #define lineeditor
 // #define vt100
@@ -22,7 +22,7 @@ const char LispLibrary[] PROGMEM = "";
 
 // Includes
 
-// #include "LispLibrary.h"
+#include "LispLibrary.h"
 #include <setjmp.h>
 #include <SPI.h>
 #include <Wire.h>
