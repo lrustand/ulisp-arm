@@ -18,7 +18,7 @@ const char LispLibrary[] PROGMEM = "";
 #define assemblerlist
 // #define lineeditor
 // #define vt100
-// #define extensions
+#define extensions
 
 // Includes
 
