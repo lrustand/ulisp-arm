@@ -2083,6 +2083,8 @@ object *mapcarcan (object *args, object *env, mapfun_t fun) {
 
 void I2Cinit (TwoWire *port, bool enablePullup) {
   (void) enablePullup;
+  port->setSDA(2);
+  port->setSCL(3);
   port->begin();
 }
 
