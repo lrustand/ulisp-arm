@@ -7227,9 +7227,14 @@ object *nextitem (gfun_t gfun) {
   int ch = gfun();
   while(issp(ch)) ch = gfun();
 
-  if (ch == ';') {
-    do { ch = gfun(); if (ch == ';' || ch == '(') setflag(NOECHO); }
-    while(ch != '(');
+  while (ch == ';') {           // handle multiple comment lines
+    ch = gfun();
+    while(ch != '\n' && ch != -1) {
+      ch = gfun();
+    }
+    while(issp(ch)) {
+      ch = gfun();
+    }
   }
   if (ch == '\n') ch = gfun();
   if (ch == -1) return nil;
