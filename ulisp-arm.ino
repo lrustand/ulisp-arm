@@ -300,7 +300,7 @@
 
 const int TRACEMAX = 3; // Number of traced functions
 enum type { ZZERO=0, SYMBOL=2, CODE=4, NUMBER=6, STREAM=8, CHARACTER=10, FLOAT=12, ARRAY=14, STRING=16, PAIR=18 };  // ARRAY STRING and PAIR must be last
-enum token { UNUSED, BRA, KET, QUO, DOT };
+enum token { UNUSED, BRA, KET, QUO, DOT, BACKTICK, COMMA, COMMAAT };
 enum stream { SERIALSTREAM, I2CSTREAM, SPISTREAM, SDSTREAM, WIFISTREAM, STRINGSTREAM, GFXSTREAM };
 enum fntypes_t { OTHER_FORMS, TAIL_FORMS, FUNCTIONS, SPECIAL_FORMS };
 
@@ -354,7 +354,7 @@ typedef uint16_t builtin_t;
 
 enum builtins: builtin_t { NIL, TEE, NOTHING, OPTIONAL, INITIALELEMENT, ELEMENTTYPE, BIT, AMPREST, LAMBDA, LET, LETSTAR,
 CLOSURE, PSTAR, QUOTE, DEFUN, DEFVAR, DEFCODE, CAR, FIRST, CDR, REST, NTH, AREF, STRINGFN, PINMODE,
-DIGITALWRITE, ANALOGREAD, ANALOGREFERENCE, REGISTER, FORMAT, 
+DIGITALWRITE, ANALOGREAD, ANALOGREFERENCE, REGISTER, FORMAT, MACRO, DEFMACRO, QUASIQUOTE, UNQUOTE, UNQUOTESPLICING, EXPAND, GENSYM, INTERN
  };
 
 // Global variables
@@ -2582,6 +2582,8 @@ void superprint (object *form, int lm, pfun_t pfun) {
     else printobject(form, pfun);
   }
   else if (quoted(form)) { pfun('\''); superprint(car(cdr(form)), lm + 1, pfun); }
+  else if (quasiquoted(form)) { pfun('`'); superprint(car(cdr(form)), lm + 1, pfun); }
+
   else if (subwidth(form, ppwidth - lm) >= 0) supersub(form, lm + PPINDENT, 0, pfun);
   else supersub(form, lm + PPINDENT, 1, pfun);
 }
@@ -4505,6 +4507,268 @@ object *fn_cls (object *args, object *env) {
   return nil;
 }
 
+
+#define GENSYM_TABLE_SIZE (64)
+typedef struct {
+  char *key;
+  uint16_t value;
+} key_value_pair_t;
+
+key_value_pair_t gensym_table[GENSYM_TABLE_SIZE];
+
+// gensym
+
+void reset_gensym(void) {
+  for (int i = 0; i < GENSYM_TABLE_SIZE; i++) {
+    free(gensym_table[i].key);
+    gensym_table[i].key = NULL;
+  }
+}
+
+char *extract_string(object *string) {
+  int size = stringlength(string);
+  char *buffer = new char[size + 1];
+  for (int i = 0; i < size; i++) {
+    buffer[i] = nthchar(string, i);
+  }
+  buffer[size] = 0;
+  return buffer;
+}
+
+object *fn_gensym(object *args, object *env) {
+  checkargs(args);
+  char *prefix;
+
+  // compute the prefix
+  if (args == nil) {
+    prefix = strdup("GENSYM");
+  } else {
+    if (!stringp(car(args)) && !symbolp(car(args))) {
+      error(PSTR("prefix must be a string or symbol"), car(args));
+    }
+    if (stringp(car(args))) {
+      prefix = extract_string(car(args));
+    } else {
+      prefix = "SLDKFJSLKDFJ"; //strdup(symbol(car(args)->name));
+    }
+  }
+
+  // find the entry
+  key_value_pair_t *found = NULL;
+  for (int i = 0; i < GENSYM_TABLE_SIZE; i++) {
+    if (gensym_table[i].key == NULL || strcmp(prefix, gensym_table[i].key) == 0) {
+      found = &gensym_table[i];
+      break;
+    }
+  }
+
+  if (found == NULL) {          // table is full
+    error2(PSTR("gensym storage exhausted"));
+  }
+
+  // update the count
+  uint16_t count = found->value;
+  if (count == 0) {
+    found->key = strdup(prefix);
+    count = 1;
+  } else {
+    count++;
+  }
+  found->value = count;
+
+  // make the new symbol
+
+  char buffer[BUFFERSIZE];
+  sprintf(buffer, "%s-%d", prefix, count);
+
+  free(prefix);
+
+  return internlong(buffer);
+}
+
+
+object *fn_intern(object *args, object *env) {
+  checkargs(args);
+  if (!stringp(car(args))) {
+    error(PSTR("can only intern strings"), car(args));
+  }
+  char *name = extract_string(car(args));
+  char buffer[BUFFERSIZE];
+  strcpy(buffer, name);
+  free(name);
+  return internlong(buffer);
+}
+
+ 
+// Macro support
+ 
+boolean quasiquoted (object *obj) {
+  return (consp(obj) && car(obj) != NULL && car(obj)->name == QUASIQUOTE && consp(cdr(obj)) && cddr(obj) == NULL);
+}
+
+boolean macrop(object *obj) {
+  return (consp(obj) && car(obj) != NULL && car(obj)->name == MACRO);
+}
+
+object *sp_defmacro (object *args, object *env) {
+  (void) env;
+  checkargs(args);
+  object *var = first(args);
+  if (var->type != SYMBOL) error(PSTR("not a symbol"), var);
+  object *val = cons(symbol(MACRO), cdr(args));
+  object *pair = value(var->name,GlobalEnv);
+  if (pair != NULL) { cdr(pair) = val; return var; }
+  push(cons(var, val), GlobalEnv);
+  return var;
+}
+
+object *reverse_it(object *l) {
+  object *reversed = NULL;
+  while (l != NULL) {
+    push(first(l),reversed);
+    l = cdr(l);
+  }
+  return reversed;
+}
+
+object *reverse_and_flatten(object *expr) {
+  if (!consp(expr))
+    return expr;
+
+  object *reversed = reverse_it(expr);
+
+  object *result = NULL;
+  for (object *cell = reversed; cell != NULL; cell = cdr(cell)) {
+    if (!consp(car(cell))) {
+      push(car(cell), result);
+    } else {
+      for (object *subcell = car(cell); subcell != NULL; subcell = cdr(subcell)) {
+        push(car(subcell), result);
+      }
+    }
+  }
+  return reverse_it(result);
+}
+
+object *process_quasiquoted(object *expr, int level, object *env) {
+  if (!consp(expr)) {
+    return cons(expr, NULL);
+  }
+
+  if (isbuiltin(car(expr), QUASIQUOTE)) {
+    object *processed = process_quasiquoted(second(expr), level + 1, env);
+    return cons(cons(symbol(QUASIQUOTE), processed), NULL);
+  } else if (isbuiltin(car(expr), UNQUOTE)) {
+    if (level == 1) {
+      object *processed = process_quasiquoted(second(expr), level, env);
+      object *result = eval(car(processed), env);
+      return cons(result, NULL);
+    } else {
+      object *processed = process_quasiquoted(second(expr), level - 1, env);
+      return cons(cons(symbol(UNQUOTE), processed), NULL);
+    }
+  } else if (isbuiltin(car(expr), UNQUOTESPLICING)) {
+    if (level == 1) {
+      object *processed = process_quasiquoted(second(expr), level, env);
+      object *result = eval(car(processed), env);
+      if (result == nil) {
+        return (object*)-1;     // sentinal to signal that @... should insert nothing (i.e. empty list)
+      } else {
+        return result;
+      }
+    } else {
+      object *processed = process_quasiquoted(second(expr), level - 1, env);
+      return cons(cons(symbol(UNQUOTESPLICING), processed), NULL);
+    }
+  } else {
+    object *parts = NULL;
+    for (object *cell = expr; cell != NULL; cell = cdr(cell)) {
+      object *processed = process_quasiquoted(car(cell), level, env);
+      if (processed != (object*)-1) { // Check for empty list insertion sentinal
+        push(processed, parts);
+      }
+    }
+
+    object *result = reverse_and_flatten(parts);
+    return cons(result, NULL);
+  }
+
+
+}
+
+object *sp_quasiquote (object *args, object *env) {
+  checkargs(args);
+  object *result = process_quasiquoted(car(args), 1, env);
+  return car(result);
+}
+
+object *sp_unquote (object *args, object *env) {
+  (void)args;
+  (void)env;
+  error2(PSTR("not supported outside a quasiquote form"));
+  return nil;
+}
+
+object *sp_unquote_splicing (object *args, object *env) {
+  (void)args;
+  (void)env;
+  error2(PSTR("not supported outside a quasiquote form"));
+  return nil;
+}
+
+
+object *expand (object *form, object *env) {
+  object *macro = eval(car(form), env);
+  if (!macrop(macro)) {
+    error(PSTR("needs a macro"), macro);
+  }
+  object *params = car(cdr(macro));
+  object *body = cdr(cdr(macro));
+
+  if (!consp(params) || !consp(cdr(form))) {
+    error2(PSTR("params and args must be lists"));
+  }
+
+  bool contains_rest = false;
+  for (object *p = params; p != nil; p = cdr(p)) {
+    if (car(p)->name == AMPREST) {
+      contains_rest = true;
+      break;
+    }
+  }
+
+  if (!contains_rest && listlength(params) != listlength(cdr(form))) {
+    error2(PSTR("different number of params and args"));
+  }
+  // add params->args to newenv
+  object *newenv = env;
+  push(newenv, GCStack);
+  object *p;
+  object *a;
+  for (p = params, a = cdr(form); p != NULL; p = cdr(p), a = cdr(a)) {
+    if (car(p)->name == AMPREST) {
+      push(cons(car(cdr(p)), a), newenv);
+      car(GCStack) = newenv;
+      break;
+    } else {
+      //push(cons(car(p), eval(car(a), env)), newenv);
+      push(cons(car(p), car(a)), newenv);
+      car(GCStack) = newenv;
+    }
+  }
+  object *expanded = eval(body, env);
+  pop(GCStack);
+
+  return expanded;
+}
+
+//MOVE arg evaluation to sp_expand
+object *sp_expand (object *args, object *env) {
+  return expand(args, env);
+}
+
+
+
 // Arduino procedures
 
 object *fn_pinmode (object *args, object *env) {
@@ -5688,6 +5952,15 @@ const char string236[] PROGMEM = ":ar-default";
 const char string237[] PROGMEM = ":ar-internal";
 const char string238[] PROGMEM = ":ar-external";
 #endif
+const char string331[] PROGMEM = "macro";
+const char string332[] PROGMEM = "defmacro";
+const char string333[] PROGMEM = "quasiquote";
+const char string334[] PROGMEM = "unquote";
+const char string335[] PROGMEM = "unquote-splicing";
+const char string336[] PROGMEM = "expand";
+const char string395[] PROGMEM = "format";
+const char string396[] PROGMEM = "gensym";
+const char string397[] PROGMEM = "intern";
 
 // Documentation strings
 const char doc0[] PROGMEM = "nil\n"
@@ -6614,6 +6887,14 @@ const tbl_entry_t lookup_table[] PROGMEM = {
   { string237, (fn_ptr_type)AR_INTERNAL, ANALOGREFERENCE, NULL },
   { string238, (fn_ptr_type)AR_EXTERNAL, ANALOGREFERENCE, NULL },
 #endif
+  { string331, NULL, 0, NULL },
+  { string332, sp_defmacro, 0307, NULL },
+  { string333, sp_quasiquote, 0311, NULL },
+  { string334, sp_unquote, 0311, NULL },
+  { string335, sp_unquote_splicing, 0311, NULL },
+  { string336, sp_expand, 0317, NULL },
+  { string396, fn_gensym, 0201, NULL },
+  { string397, fn_intern, 0211, NULL },
 };
 
 #if !defined(extensions)
@@ -6731,6 +7012,7 @@ object *eval (object *form, object *env) {
   // It's a list
   object *function = car(form);
   object *args = cdr(form);
+  object *unevaled_args = cdr(form);
 
   if (function == NULL) error(PSTR("illegal function"), nil);
   if (!listp(args)) error(PSTR("can't evaluate a dotted pair"), args);
@@ -6798,8 +7080,16 @@ object *eval (object *form, object *env) {
   form = cdr(form);
   int nargs = 0;
 
-  while (form != NULL){
-    object *obj = cons(eval(car(form),env),NULL);
+  // bool is_macro = consp(car(head)) && (issymbol(car(car(head)), MACRO));
+
+  while (form != NULL) {
+    object *obj;
+    // don't evaluate args to a macro
+    // if (is_macro) {
+    //   obj = cons(car(form),NULL);
+    // } else {
+      obj = cons(eval(car(form),env),NULL);
+    // }
     cdr(tail) = obj;
     tail = obj;
     form = cdr(form);
@@ -6856,6 +7146,11 @@ object *eval (object *form, object *env) {
       uint32_t entry = startblock(car(function)) + 1;
       pop(GCStack);
       return call(entry, n, args, env);
+    }
+
+    if (isbuiltin(car(function), MACRO)) {
+      form = expand(form, env);
+      goto EVAL;
     }
 
   }
@@ -7227,15 +7522,23 @@ object *nextitem (gfun_t gfun) {
   int ch = gfun();
   while(issp(ch)) ch = gfun();
 
-  if (ch == ';') {
-    do { ch = gfun(); if (ch == ';' || ch == '(') setflag(NOECHO); }
-    while(ch != '(');
+  while (ch == ';') {           // handle multiple comment lines
+    ch = gfun();
+    while(ch != '\n' && ch != -1) {
+      ch = gfun();
+    }
+    while(isspace(ch)) {
+      ch = gfun();
+    }
   }
   if (ch == '\n') ch = gfun();
   if (ch == -1) return nil;
   if (ch == ')') return (object *)KET;
   if (ch == '(') return (object *)BRA;
   if (ch == '\'') return (object *)QUO;
+  if (ch == '`') return (object *)BACKTICK;
+  if (ch == ',') return (object *)COMMA;
+  if (ch == '@') return (object *)COMMAAT;
 
   // Parse string
   if (ch == '"') return readstring('"', true, gfun);
@@ -7358,6 +7661,12 @@ object *readrest (gfun_t gfun) {
       item = readrest(gfun);
     } else if (item == (object *)QUO) {
       item = cons(bsymbol(QUOTE), cons(read(gfun), NULL));
+    } else if (item == (object *)BACKTICK) {
+      item = cons(symbol(QUASIQUOTE), cons(read(gfun), NULL));
+    } else if (item == (object *)COMMA) {
+      item = cons(symbol(UNQUOTE), cons(read(gfun), NULL));
+    } else if (item == (object *)COMMAAT) {
+      item = cons(symbol(UNQUOTESPLICING), cons(read(gfun), NULL));
     } else if (item == (object *)DOT) {
       tail->cdr = read(gfun);
       if (readrest(gfun) != NULL) error2(PSTR("malformed list"));
@@ -7379,6 +7688,10 @@ object *read (gfun_t gfun) {
   if (item == (object *)BRA) return readrest(gfun);
   if (item == (object *)DOT) return read(gfun);
   if (item == (object *)QUO) return cons(bsymbol(QUOTE), cons(read(gfun), NULL));
+  if (item == (object *)BACKTICK) return cons(symbol(QUASIQUOTE), cons(read(gfun), NULL));
+  if (item == (object *)COMMA) return cons(symbol(UNQUOTE), cons(read(gfun), NULL));
+  if (item == (object *)COMMAAT) return cons(symbol(UNQUOTESPLICING), cons(read(gfun), NULL));
+
   return item;
 }
 
