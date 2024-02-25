@@ -2083,8 +2083,10 @@ object *mapcarcan (object *args, object *env, mapfun_t fun) {
 
 void I2Cinit (TwoWire *port, bool enablePullup) {
   (void) enablePullup;
+  #if defined(CPU_RP2040)
   port->setSDA(2);
   port->setSCL(3);
+  #endif
   port->begin();
 }
 
@@ -7426,6 +7428,9 @@ void initgfx () {
 
 // Entry point from the Arduino IDE
 void setup () {
+  #if defined(CPU_RP2040)
+  rp2040.enableDoubleResetBootloader();
+  #endif
   Serial.begin(9600);
   delay(2000);
   int start = millis();
